@@ -1,0 +1,6 @@
+fast-alpr
+opencv-python-headless
+rapidfuzz
+fastapi
+uvicorn[standard]
+httpx

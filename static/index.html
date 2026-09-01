@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANPR Intelligence Platform</title>
+
+<!-- Vendored locally. NO CDN - there is no internet on stage.
+     Run ./vendor.sh once to download these. -->
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<script src="/static/vendor/leaflet.js"></script>
+<script src="/static/vendor/leaflet-heat.js"></script>
+
+<style>
+  :root {
+    --ink:    #0F1E29;   /* deep petrol - the night-map base */
+    --panel:  #16293A;
+    --raised: #1E3A50;
+    --line:   #27455C;
+    --plate:  #F5C518;   /* Indian commercial plate yellow */
+    --text:   #DCE8F0;
+    --muted:  #7C99AC;
+    --alert:  #E8402A;
+    --ok:     #4FC28B;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ink); color: var(--text);
+    font: 400 14px/1.5 "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .mono { font-family: "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; }
+
+  /* ---------- alert bar: hidden until a blacklist hit fires ---------- */
+  #alertbar {
+    display: none; background: var(--alert); color: #fff;
+    padding: 14px 20px; align-items: center; gap: 18px;
+    box-shadow: 0 4px 24px rgba(232,64,42,.4);
+  }
+  #alertbar.on { display: flex; animation: pulse 1.1s ease-in-out 4; }
+  @keyframes pulse { 50% { background: #B62E1D; } }
+  @media (prefers-reduced-motion: reduce) { #alertbar.on { animation: none; } }
+  #alertbar .plate { font-size: 26px; font-weight: 700; letter-spacing: .06em; }
+  #alertbar .why { font-size: 13px; opacity: .9; }
+  #alertbar button {
+    margin-left: auto; background: rgba(0,0,0,.25); color: #fff;
+    border: 1px solid rgba(255,255,255,.35); border-radius: 3px;
+    padding: 7px 14px; cursor: pointer; font-size: 13px;
+  }
+
+  /* ---------- top strip ---------- */
+  header {
+    display: flex; align-items: baseline; gap: 28px;
+    padding: 12px 20px; border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  header h1 {
+    font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em;
+  }
+  header h1 span { color: var(--plate); }
+  .stats { display: flex; gap: 26px; margin-left: auto; }
+  .stat b { font-size: 17px; font-weight: 600; color: var(--plate); }
+  .stat i { font-style: normal; color: var(--muted); font-size: 12px; margin-left: 6px; }
+
+  /* ---------- three-column body ---------- */
+  main { flex: 1; display: grid; grid-template-columns: 340px 1fr 300px; min-height: 0; }
+  aside { background: var(--panel); overflow-y: auto; }
+  aside.left  { border-right: 1px solid var(--line); }
+  aside.right { border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  #map { height: 100%; background: #0B1620; }
+
+  .block { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  .block h2 {
+    font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted);
+  }
+
+  input, select {
+    width: 100%; padding: 10px 12px; background: var(--ink);
+    border: 1px solid var(--line); border-radius: 3px; color: var(--text);
+    font-size: 14px; font-family: inherit;
+  }
+  input:focus, select:focus, button:focus-visible {
+    outline: 2px solid var(--plate); outline-offset: 1px;
+  }
+  .btn {
+    width: 100%; margin-top: 9px; padding: 10px; cursor: pointer;
+    background: var(--plate); color: #16130A; border: 0; border-radius: 3px;
+    font-size: 14px; font-weight: 600; font-family: inherit;
+  }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+
+  /* ---------- trajectory: the signature element ---------- */
+  .summary { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+  .summary b { color: var(--text); }
+  .rescued {
+    background: rgba(245,197,24,.12); border-left: 2px solid var(--plate);
+    padding: 9px 11px; margin: 12px 0; font-size: 12.5px; line-height: 1.55;
+  }
+
+  ol.stops { list-style: none; margin: 0; padding: 0; }
+  ol.stops li {
+    position: relative; padding: 0 0 20px 24px;
+    border-left: 1px solid var(--line); margin-left: 6px;
+  }
+  ol.stops li:last-child { border-left-color: transparent; padding-bottom: 4px; }
+  ol.stops li::before {
+    content: ""; position: absolute; left: -5px; top: 4px;
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--ok); border: 2px solid var(--panel);
+  }
+  ol.stops li.corrected::before { background: var(--plate); }
+  ol.stops li.bad::before { background: var(--alert); }
+
+  .stop-cam  { font-weight: 600; font-size: 13.5px; }
+  .stop-meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .stop-read { margin-top: 5px; font-size: 13px; letter-spacing: .04em; }
+  .stop-read .fixed { color: var(--plate); }
+  .warn { color: var(--alert); font-size: 12px; margin-top: 4px; }
+
+  /* ---------- live ticker ---------- */
+  #ticker { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .read {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 8px 18px; border-bottom: 1px solid rgba(39,69,92,.4);
+  }
+  .read .p { font-size: 14px; font-weight: 600; letter-spacing: .05em; }
+  .read .c { color: var(--muted); font-size: 11.5px; margin-left: auto; text-align: right; }
+  .read.fresh { background: rgba(245,197,24,.09); }
+
+  .empty { color: var(--muted); font-size: 13px; padding: 4px 0; }
+  .bl-row {
+    display: flex; gap: 8px; align-items: center; font-size: 13px;
+    padding: 6px 0; border-bottom: 1px solid rgba(39,69,92,.4);
+  }
+  .bl-row .x { margin-left: auto; color: var(--muted); cursor: pointer; }
+
+  .leaflet-container { background: #0B1620; }
+  .leaflet-popup-content-wrap { background: var(--panel); color: var(--text); border-radius: 3px; }
+  .leaflet-popup-tip { background: var(--panel); }
+</style>
+</head>
+<body>
+
+<div id="alertbar" role="alert" aria-live="assertive">
+  <div>
+    <div class="plate mono" id="al-plate">—</div>
+    <div class="why" id="al-why"></div>
+  </div>
+  <button onclick="document.getElementById('alertbar').classList.remove('on')">Dismiss</button>
+</div>
+
+<header>
+  <h1>City-Wide ANPR Intelligence Platform <span>· Innvo8ors</span></h1>
+  <div class="stats">
+    <div class="stat"><b id="s-events">0</b><i>reads</i></div>
+    <div class="stat"><b id="s-rate">0</b><i>per sec</i></div>
+    <div class="stat"><b id="s-plates">0</b><i>vehicles</i></div>
+    <div class="stat"><b id="s-cams">0</b><i>cameras</i></div>
+  </div>
+</header>
+
+<main>
+  <aside class="left">
+    <div class="block">
+      <h2>Trace a vehicle</h2>
+      <input id="q" class="mono" placeholder="KA05MJ2345" autocomplete="off"
+             onkeydown="if(event.key==='Enter')search()">
+      <button class="btn" onclick="search()">Trace route</button>
+      <button class="btn ghost" onclick="toggleHeat()" id="heatbtn">Show density heatmap</button>
+    </div>
+    <div class="block" id="result">
+      <h2>Route</h2>
+      <p class="empty">Enter a plate to reconstruct its path across the camera network.</p>
+    </div>
+  </aside>
+
+  <div id="map"></div>
+
+  <aside class="right">
+    <div class="block" style="border-bottom:1px solid var(--line)">
+      <h2>Live reads</h2>
+    </div>
+    <div id="ticker">
+      <p class="empty" style="padding:12px 18px">Waiting for camera feeds.</p>
+    </div>
+    <div class="block">
+      <h2>Watchlist</h2>
+      <input id="bl" class="mono" placeholder="Add plate to watchlist" autocomplete="off"
+             onkeydown="if(event.key==='Enter')addBlacklist()">
+      <button class="btn" onclick="addBlacklist()">Add to watchlist</button>
+      <div id="bl-list" style="margin-top:12px"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const map = L.map('map', { zoomControl: true }).setView([12.90, 77.62], 12);
+L.tileLayer('/static/tiles/{z}/{x}/{y}.png', {
+  maxZoom: 16, minZoom: 10,
+  // If offline tiles are missing, the map still works - markers and routes
+  // render on the dark background. Do not add a CDN fallback here.
+  errorTileUrl: ''
+}).addTo(map);
+
+let camMarkers = {}, routeLayer = null, heatLayer = null, heatOn = false;
+
+async function j(url, opts) { const r = await fetch(url, opts); return r.json(); }
+
+// ---------- cameras ----------
+(async () => {
+  const cams = await j('/api/cameras');
+  cams.forEach(c => {
+    const m = L.circleMarker([c.lat, c.lng], {
+      radius: c.is_live ? 8 : 5,
+      color: c.is_live ? '#F5C518' : '#7C99AC',
+      fillColor: c.is_live ? '#F5C518' : '#27455C',
+      fillOpacity: .85, weight: 2
+    }).addTo(map).bindPopup(
+      `<b>${c.name}</b><br>${c.id}${c.is_live ? ' · live feed' : ''}`
+    );
+    camMarkers[c.id] = m;
+  });
+  if (cams.length) map.fitBounds(cams.map(c => [c.lat, c.lng]), { padding: [50, 50] });
+})();
+
+// ---------- stats ----------
+async function refreshStats() {
+  const s = await j('/api/stats');
+  s_events.textContent = s.total_events.toLocaleString();
+  s_rate.textContent   = s.events_per_sec.toLocaleString();
+  s_plates.textContent = s.unique_plates.toLocaleString();
+  s_cams.textContent   = s.cameras;
+}
+refreshStats(); setInterval(refreshStats, 2000);
+
+// ---------- trajectory ----------
+async function search() {
+  const plate = q.value.trim();
+  if (!plate) return;
+  const box = document.getElementById('result');
+  box.innerHTML = '<h2>Route</h2><p class="empty">Searching…</p>';
+
+  const d = await j('/api/trajectory?plate=' + encodeURIComponent(plate));
+  if (d.error) { box.innerHTML = `<h2>Route</h2><p class="empty">${d.error}</p>`; return; }
+  if (!d.stop_count) {
+    box.innerHTML = '<h2>Route</h2><p class="empty">No reads for this plate in the last 24 hours.</p>';
+    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+    return;
+  }
+
+  let html = `<h2>Route</h2>
+    <p class="summary"><b>${d.stop_count} camera${d.stop_count>1?'s':''}</b>
+    · ${d.total_km} km tracked</p>`;
+
+  if (d.corrected_stops > 0) {
+    html += `<div class="rescued">
+      ${d.corrected_stops} of these ${d.stop_count} reads had OCR character errors.
+      Exact matching would have returned only ${d.exact_match_would_have_found}
+      and broken the route.</div>`;
+  }
+
+  html += '<ol class="stops">';
+  d.stops.forEach(s => {
+    const cls = s.implausible ? 'bad' : (s.exact ? '' : 'corrected');
+    const t = new Date(s.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    html += `<li class="${cls}">
+      <div class="stop-cam">${s.camera_name}</div>
+      <div class="stop-meta">${t} · ${s.camera_id} · confidence ${(s.confidence*100).toFixed(0)}%
+        ${s.leg_kmh !== undefined ? ' · ' + s.leg_kmh + ' km/h' : ''}</div>
+      <div class="stop-read mono">${s.exact
+        ? s.plate_norm
+        : `<span class="fixed">${s.plate_raw}</span> → ${d.query}`}</div>
+      ${!s.exact ? '<div class="stop-meta">Character error corrected</div>' : ''}
+      ${s.implausible ? '<div class="warn">Implausible speed — possible plate collision</div>' : ''}
+    </li>`;
+  });
+  html += '</ol>';
+  box.innerHTML = html;
+
+  // draw the route
+  if (routeLayer) map.removeLayer(routeLayer);
+  const pts = d.stops.map(s => [s.lat, s.lng]);
+  routeLayer = L.layerGroup([
+    L.polyline(pts, { color: '#F5C518', weight: 3, opacity: .9 }),
+    ...pts.map((p, i) => L.marker(p).bindTooltip(String(i + 1), {
+      permanent: true, direction: 'center', className: 'stopnum'
+    }))
+  ]).addTo(map);
+  if (pts.length > 1) map.fitBounds(pts, { padding: [70, 70] });
+}
+
+// ---------- heatmap ----------
+async function toggleHeat() {
+  heatOn = !heatOn;
+  heatbtn.textContent = heatOn ? 'Hide density heatmap' : 'Show density heatmap';
+  if (!heatOn) { if (heatLayer) map.removeLayer(heatLayer); return; }
+  const h = await j('/api/analytics/heatmap');
+  const max = Math.max(...h.map(x => x.reads), 1);
+  heatLayer = L.heatLayer(h.map(x => [x.lat, x.lng, x.reads / max]),
+    { radius: 45, blur: 30, maxZoom: 14 }).addTo(map);
+}
+
+// ---------- watchlist ----------
+async function loadBlacklist() {
+  const items = await j('/api/blacklist');
+  document.getElementById('bl-list').innerHTML = items.length
+    ? items.map(i => `<div class="bl-row"><span class="mono">${i.plate_norm}</span>
+        <span class="x" onclick="delBlacklist('${i.plate_norm}')">remove</span></div>`).join('')
+    : '<p class="empty">No plates on the watchlist.</p>';
+}
+async function addBlacklist() {
+  const p = bl.value.trim(); if (!p) return;
+  await j('/api/blacklist', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ plate: p, reason: 'Flagged by operator' })
+  });
+  bl.value = ''; loadBlacklist();
+}
+async function delBlacklist(p) {
+  await fetch('/api/blacklist/' + p, { method: 'DELETE' });
+  loadBlacklist();
+}
+loadBlacklist();
+
+// ---------- live websocket ----------
+const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://')
+  + location.host + '/ws');
+
+ws.onmessage = e => {
+  const m = JSON.parse(e.data);
+  if (m.type === 'alert') return fireAlert(m);
+
+  const t = document.getElementById('ticker');
+  if (t.querySelector('.empty')) t.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'read fresh';
+  row.innerHTML = `<span class="p mono">${m.plate_norm}</span>
+    <span class="c">${m.camera_id}<br>${new Date(m.ts).toLocaleTimeString()}</span>`;
+  t.prepend(row);
+  setTimeout(() => row.classList.remove('fresh'), 1400);
+  while (t.children.length > 60) t.lastChild.remove();
+
+  const mk = camMarkers[m.camera_id];
+  if (mk) { mk.setStyle({ radius: 14 }); setTimeout(() => mk.setStyle({ radius: 8 }), 500); }
+};
+
+function fireAlert(m) {
+  al_plate.textContent = m.plate_norm;
+  al_why.textContent =
+    `Watchlist match at ${m.camera_id} · ${m.reason}` +
+    (m.plate_norm !== m.matched
+      ? ` · read as ${m.plate_norm}, matched ${m.matched} after character correction`
+      : '');
+  document.getElementById('alertbar').classList.add('on');
+  beep();
+}
+
+// short two-tone alert, no audio file needed
+function beep() {
+  try {
+    const a = new (window.AudioContext || window.webkitAudioContext)();
+    [880, 660].forEach((f, i) => {
+      const o = a.createOscillator(), g = a.createGain();
+      o.frequency.value = f; o.connect(g); g.connect(a.destination);
+      g.gain.setValueAtTime(.14, a.currentTime + i * .18);
+      o.start(a.currentTime + i * .18); o.stop(a.currentTime + i * .18 + .16);
+    });
+  } catch (e) {}
+}
+</script>
+</body>
+</html>

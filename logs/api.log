@@ -1,0 +1,28 @@
+INFO:     Started server process [76384]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "C:\Users\ACER\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\routing.py", line 648, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\ACER\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\routing.py", line 265, in __aenter__
+    await self._router._startup()
+  File "C:\Users\ACER\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\routing.py", line 6375, in _startup
+    await handler()
+  File "D:\anpr\anpr-prototype-1\api.py", line 333, in startup
+    refresh_camera_index()
+    ~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\anpr\anpr-prototype-1\api.py", line 150, in refresh_camera_index
+    r["id"]: r for r in db.rows(
+                        ~~~~~~~^
+        conn,
+        ^^^^^
+        "SELECT id, jurisdiction, corridor_next, corridor_km, speed_limit_kmh FROM cameras",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\anpr\anpr-prototype-1\db.py", line 26, in rows
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+                             ~~~~~~~~~~~~^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: jurisdiction
+
+ERROR:    Application startup failed. Exiting.
